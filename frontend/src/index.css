@@ -1,0 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+  }
+
+  ::selection {
+    @apply bg-registry text-paper;
+  }
+
+  :focus-visible {
+    outline: 2px solid #2E5339;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@layer utilities {
+  .type-scale-hero {
+    font-size: clamp(2.5rem, 5vw + 1rem, 5rem);
+    line-height: 0.98;
+    letter-spacing: -0.01em;
+  }
+
+  .field-divider {
+    background-image: repeating-linear-gradient(
+      to right,
+      #DDD8CB,
+      #DDD8CB 4px,
+      transparent 4px,
+      transparent 9px
+    );
+    height: 1px;
+  }
+}
