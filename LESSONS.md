@@ -3,11 +3,112 @@
 Standalone record of how this build actually went, written for a future
 session with no memory of this conversation — the same purpose as
 SentinelSLA's own LESSONS.md. Structured the same way: confirmed facts
-stated as rules, each with its evidence, not narrative. Durable,
-reusable facts from this document have already been folded into
-Project Knowledge's own sections 2, 4, 7, 9; this file stays in the
-repo as the dated, build-specific record of how each fact was found —
-read it if you want the reasoning behind a rule, not just the rule.
+stated as rules, each with its evidence, not narrative.
+
+**Unlike SentinelSLA's own LESSONS.md, the generalizable rules below
+have NOT been folded into Project Knowledge** — by explicit user
+choice, Project Knowledge doesn't get updated on every app. This file
+is the only place these rules live. If a future session is working on
+a different app and hasn't read this file, it will not automatically
+know any of Part 0's rules — they aren't in the shared document the
+way Bugs 1–10 are. Part 0 below is written to stand alone for that
+reason: read it before starting a new build even outside DomainClaim's
+own repo, since these five rules are general project discipline, not
+DomainClaim-specific facts. Parts 1–6 are this build's own dated
+story — the evidence and reasoning behind Part 0's rules, plus
+everything that's genuinely specific to DomainClaim itself.
+
+---
+
+## Part 0 — General rules from this build, not yet in Project Knowledge
+
+These five are written to be usable on their own, without needing the
+rest of this file's DomainClaim-specific context. If Project Knowledge
+is ever bulk-updated in the future, these are the candidates — until
+then, this is where they live.
+
+### 0.1 Fresh evidence outranks stored memory
+
+When a screenshot, a direct user statement, or any other fresh
+evidence conflicts with what memory currently says (a score, a status,
+a "not yet submitted"), the fresh evidence wins, and the gap is worth
+understanding before proceeding rather than silently papered over —
+memory updates in the background and can be genuinely stale, not
+wrong at the time it was written. See Part 1.1 below for exactly what
+this caught on this build.
+
+### 0.2 Read the real file, not its summary — especially before reusing or diverging from a pattern
+
+A memory-catalog summary, or a prior build's own docstring describing
+itself, is a compressed, lossy pointer — treat it as "go read the real
+file," not as a substitute for reading it. This held across three
+separate moments in this one build: a prior contract's actual source
+had more rigor than its memory summary implied (Part 1.2); a real,
+generalizable improvement over a prior challenge function was only
+visible from its actual body, not its docstring (Part 3); a
+confirmed-working frontend hook was correctly adapted from the real
+file, not reconstructed from a description of the pattern (Part 6.1).
+This is the single most repeated lesson from this build — worth
+checking on every future build, not treated as a one-off practice.
+
+### 0.3 A framework test asserted as "pass" needs an explicit stress-test
+
+Concluding "this concept probably has depth potential" narratively is
+not the same as checking whether it actually has a second act — a
+real non-terminal state, a real party who can contest an outcome.
+When a concept's Test 4 pass is asserted, ask explicitly: does the
+evidence source have a property that could make a resolved verdict
+genuinely become wrong later, and does the design let anyone act on
+that? A challenge/dispute layer added to satisfy this should come from
+the evidence source's own real-world properties (see Part 4.3's RDAP
+example) — not imported from a different concept's shape just because
+it worked there, which is scope-creep dressed as depth.
+
+### 0.4 Don't depend on an unconfirmed redirect; route around it
+
+When an evidence source's own documentation describes discovery via
+HTTP redirect rather than a direct data response, and the fetch
+tool's redirect-following behavior isn't independently confirmed, this
+is the same risk category as a fetch returning something
+plausible-looking but structurally wrong with no obvious error (the
+same class of bug as GitHub commit URLs returning HTML instead of
+diff content). Either confirm the fetch tool's redirect behavior
+directly, or — usually simpler either way — find the non-redirecting
+canonical source underneath the convenience layer and resolve it
+deterministically in contract code instead. See Part 2.1 for the exact
+case this caught on this build (rdap.org vs. IANA's static bootstrap
+file).
+
+Relatedly: when an evidence source can signal the same real-world fact
+through multiple, non-uniformly-implemented mechanisms (see Part 2.2 —
+RDAP's several ways of signaling privacy redaction), write the
+judgment prompt to ask the semantic question the mechanisms are all
+trying to answer, not to parse any one mechanism's exact wire format.
+
+### 0.5 A claimed improvement or claimed consistency isn't confirmed until it's mechanically checked
+
+Saying "I did X" in a docstring or a comment is not the same as X
+being true in the finished artifact. Grep the finished file for the
+specific line that proves a claimed fix or improvement is actually
+present (Part 3.2). Diff or directly compare any two files that are
+supposed to agree — a README tagline against a description file, a
+packaged contract against the exact version that was live-tested —
+immediately before packaging, not assumed from having written both
+carefully (Part 6.3). Run these as their own explicit step; this build
+caught two real, otherwise-invisible problems specifically by doing
+this, not by re-reading more carefully.
+
+### 0.6 State id-consumption and transaction-sequence status proactively during live testing
+
+When a test plan includes a deliberately-invalid call to confirm a
+revert path works, say explicitly at the time whether a failing call
+will consume an auto-incrementing id — don't wait for a resulting
+mismatch to explain it after the fact (see Part 5.1). At natural
+checkpoints in a long live-testing sequence (e.g. moving into a new
+phase like a challenge round), proactively restate the full
+transaction sequence so far as a short numbered list — method, result,
+in order — rather than only reconstructing it reactively once the
+person expresses confusion (see Part 5.2).
 
 ---
 
@@ -435,30 +536,13 @@ clean. Both outcomes were only knowable by actually running the check.
 
 ---
 
-## Summary — the five habits this build reinforced or established, for quick reference
+## Summary
 
-1. **A screenshot or direct user statement outranks stored memory** —
-   check memory against fresh evidence, don't treat memory as
-   ground truth by default (Part 1.1).
-2. **Read the real file, not its summary** — this held across three
-   separate contexts in one build (a prior contract's source, Part
-   1.2; a prior challenge function before diverging from it, Part 3;
-   a prior frontend hook before reusing it, Part 6.1). This is the
-   single most repeated lesson in this document.
-3. **A framework test asserted as "pass" needs an explicit
-   stress-test, not just a narrative sense that it's probably fine**
-   — this is what the two-method version's Test-4 failure actually
-   was (Part 4.2).
-4. **When an evidence source's discovery mechanism relies on
-   unconfirmed fetch-tool behavior (redirects, in this case), route
-   around the unknown via a more auditable canonical source rather
-   than gambling on the assumption** (Part 2.1) — this is a new,
-   generalized instance of the same discipline Bug 9 already
-   established for GitHub commit URLs.
-5. **A claimed improvement or a claimed consistency between files is
-   not confirmed until it's mechanically checked** — grep the
-   finished file for the specific line that proves the claim (Part
-   3.2), or diff/directly-compare the two files that are supposed to
-   agree (Part 6.3). This closes the loop between "I said I did X"
-   and "X is actually true in the artifact," and this build caught
-   real, otherwise-invisible problems specifically by doing this.
+The five general rules referenced throughout this document — fresh
+evidence over stored memory, read the real file, stress-test Test 4
+rather than asserting it, don't depend on unconfirmed redirects, and
+mechanically check any claimed improvement or consistency — are
+written out in full at the top of this file, in **Part 0**, since
+they aren't (by explicit choice) folded into Project Knowledge and
+this file is where they live. If you're revisiting this document later
+and only have time to reread one section, reread Part 0.
