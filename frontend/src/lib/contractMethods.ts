@@ -9,6 +9,7 @@ export const READ_METHODS = {
   getChallenge: 'get_challenge',
   getClaimsForDomain: 'get_claims_for_domain',
   isPairPermanentlyVoided: 'is_pair_permanently_voided',
+  getVerificationInstructions: 'get_verification_instructions',
   getNextClaimId: 'get_next_claim_id',
   getNextChallengeId: 'get_next_challenge_id',
 } as const;
