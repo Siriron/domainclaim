@@ -34,15 +34,19 @@ const SECTIONS: Section[] = [
         <ol className="list-decimal pl-5 space-y-2">
           <li>
             <span className="font-medium text-ink">file_claim</span> records a
-            domain and a claimed registrant identity. The domain is validated
-            syntactically before anything is stored.
+            domain and a claimed registrant identity, and returns a unique DNS
+            TXT record (name and value) the caller can optionally publish as
+            proof of domain control. The domain is validated syntactically
+            before anything is stored.
           </li>
           <li>
             <span className="font-medium text-ink">resolve_claim</span>{' '}
             resolves the domain's TLD to its authoritative RDAP server via
-            IANA's own bootstrap registry, fetches the live record, and a
-            leader/validator quorum independently judges whether a genuine
-            registrant-role entity supports the claim.
+            IANA's own bootstrap registry, fetches the live record, checks live
+            DNS for the verification token, and a leader/validator quorum
+            independently judges whether a genuine registrant-role entity
+            supports the claim — combined deterministically with whether DNS
+            ownership was actually proven.
           </li>
           <li>
             <span className="font-medium text-ink">challenge_claim</span>{' '}
@@ -51,8 +55,9 @@ const SECTIONS: Section[] = [
           <li>
             <span className="font-medium text-ink">resolve_challenge</span>{' '}
             runs a second, fully independent consensus round — re-fetching
-            RDAP fresh, not reading the original claim's stored content — and
-            can uphold, overturn, or reject the challenge.
+            RDAP and re-checking DNS fresh, not reading the original claim's
+            stored content — and can uphold, overturn, or reject the
+            challenge.
           </li>
           <li>
             <span className="font-medium text-ink">finalize_claim</span> locks
@@ -72,12 +77,18 @@ const SECTIONS: Section[] = [
         <ul className="list-disc pl-5 space-y-2">
           <li>
             <span className="font-mono text-xs bg-paper-dim px-1.5 py-0.5 rounded-sm">judged</span> —
-            a real verdict: <span className="font-medium">control_confirmed</span>,{' '}
+            a real verdict: <span className="font-medium">control_confirmed</span>{' '}
+            (RDAP identity match AND DNS ownership both verified),{' '}
+            <span className="font-medium">ownership_unverified</span> (RDAP
+            identity matched, but domain control was never proven via DNS),{' '}
             <span className="font-medium">control_disputed</span>, or{' '}
             <span className="font-medium">registrant_unresolvable</span> if RDAP
             genuinely contains no identifying registrant data. This last case
             is common, not rare — most consumer domain registrations use
-            privacy proxies by default.
+            privacy proxies by default. Publishing the DNS record is always
+            optional — a claim resolved without it still gets an honest
+            verdict, capped at ownership_unverified rather than reaching
+            control_confirmed.
           </li>
           <li>
             <span className="font-mono text-xs bg-paper-dim px-1.5 py-0.5 rounded-sm">void</span> —
@@ -135,6 +146,7 @@ const SECTIONS: Section[] = [
                 ['get_challenge', 'view'],
                 ['get_claims_for_domain', 'view'],
                 ['is_pair_permanently_voided', 'view'],
+                ['get_verification_instructions', 'view'],
                 ['get_next_claim_id', 'view'],
                 ['get_next_challenge_id', 'view'],
               ].map(([m, k]) => (
@@ -161,6 +173,21 @@ const SECTIONS: Section[] = [
           registrants regardless of registrar choice. A genuinely disclosed
           registrant is the minority case for consumer-registered domains,
           not the majority.
+        </p>
+        <p className="font-medium text-ink mb-1">Do I have to publish the DNS record?</p>
+        <p className="mb-4">
+          No — it's optional. Resolving without it still produces an honest
+          verdict, it just caps out at ownership_unverified rather than
+          reaching control_confirmed, since RDAP-text agreement alone was
+          found, via a real portal review, not to be sufficient proof that
+          the filer actually controls the domain.
+        </p>
+        <p className="font-medium text-ink mb-1">I published the record and it still shows unverified.</p>
+        <p className="mb-4">
+          DNS propagation isn't instant. The contract checks a public DNS
+          resolver, not the authoritative nameserver directly — if you just
+          published the record, wait for normal DNS propagation time and
+          resolve again.
         </p>
         <p className="font-medium text-ink mb-1">Can I use a URL instead of a bare domain?</p>
         <p className="mb-4">

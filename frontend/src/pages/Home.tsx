@@ -28,10 +28,11 @@ export default function Home() {
               Who controls a domain, according to the registry — not a screenshot.
             </h1>
             <p className="text-ink-soft text-lg leading-relaxed max-w-md mb-8">
-              DomainClaim fetches the live RDAP record for a domain and judges a
-              claimed registrant identity against it directly. No party supplies
-              evidence. The record speaks for itself, or it doesn't — and the
-              contract says so plainly either way.
+              DomainClaim fetches the live RDAP record for a domain and checks
+              live DNS for proof of control — never a screenshot, never a
+              submitted URL, never identity text alone. The record speaks for
+              itself, or it doesn't, and the contract says so plainly either
+              way.
             </p>
             <button
               onClick={() => setDemoActive(true)}
@@ -72,8 +73,9 @@ export default function Home() {
           File a claim
         </h2>
         <p className="text-file mb-8 max-w-lg">
-          Name a domain and the identity you believe controls it. The contract
-          fetches RDAP and resolves both steps as one flow below.
+          Name a domain and the identity you believe controls it. Filing shows
+          a DNS record you can optionally publish before resolving — proving
+          real domain control, not just identity text.
         </p>
         <FileClaimForm />
       </section>
@@ -84,10 +86,10 @@ export default function Home() {
           <h2 className="font-display text-2xl font-semibold text-ink mb-8">How a claim moves</h2>
           <div className="grid gap-6 md:grid-cols-5">
             {[
-              { step: 'file_claim', desc: 'Domain and claimed identity recorded on-chain.' },
-              { step: 'resolve_claim', desc: 'RDAP fetched live; verdict reached by validator quorum.' },
+              { step: 'file_claim', desc: 'Domain and claimed identity recorded; a DNS TXT token is issued.' },
+              { step: 'resolve_claim', desc: 'RDAP and DNS both checked live; verdict reached by validator quorum.' },
               { step: 'challenge_claim', desc: 'Anyone may contest a resolved verdict within 7 days.' },
-              { step: 'resolve_challenge', desc: 'A second, independent round re-fetches RDAP fresh.' },
+              { step: 'resolve_challenge', desc: 'A second, independent round re-fetches RDAP and DNS fresh.' },
               { step: 'finalize_claim', desc: 'Locked once the window closes or a challenge resolves.' },
             ].map((s, i) => (
               <div key={s.step} className="relative">
