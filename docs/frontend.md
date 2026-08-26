@@ -12,8 +12,8 @@ src/
     Navbar.tsx           top nav, wallet connect state
     Footer.tsx            contract address, links
     ErrorBoundary.tsx      styled crash fallback
-    RdapTrace.tsx           the signature element — live RDAP resolution trace
-    FileClaimForm.tsx        file + resolve, combined into one flow
+    RdapTrace.tsx           the signature element — live RDAP + DNS resolution trace
+    FileClaimForm.tsx        two explicit steps: file (surfaces the DNS record to publish), then resolve
     ChallengePanel.tsx        look up, challenge, and resolve a claim
   pages/
     Home.tsx               hero + file form + lifecycle overview
@@ -30,7 +30,7 @@ src/
 
 ## Design system
 
-**Subject:** a domain registry lookup — the bureaucratic layer of internet infrastructure (IANA, ICANN, registrars, RDAP) rather than a consumer app or a courtroom docket. The signature element is the RDAP trace itself: submitting a domain shows the actual bootstrap → registry → entities resolution happening, ending in the real fetched record rendering, rather than a generic spinner.
+**Subject:** a domain registry lookup — the bureaucratic layer of internet infrastructure (IANA, ICANN, registrars, RDAP) rather than a consumer app or a courtroom docket. The signature element is the RDAP + DNS trace itself: submitting a domain shows the actual bootstrap → registry → entities → DNS-ownership-check resolution happening, ending in the real fetched result rendering, rather than a generic spinner.
 
 **Palette:**
 - `#F7F5F0` paper (background)
@@ -44,3 +44,7 @@ src/
 ## Wallet connection
 
 Built on the confirmed-working pattern: `ensureChain()` before every write, the wallet's plain address string passed as `account` (never `createAccount()`, which expects a private key), persistent connection via a silent `eth_accounts` check on mount, and a `TimeoutError` class carrying the transaction hash so a slow-but-succeeding write never looks like a failure.
+
+## Why filing and resolving are two explicit steps
+
+An earlier version fired `file_claim` then `resolve_claim` automatically, back to back. Once `resolve_claim` could also depend on a DNS record the caller needs time to go publish, auto-resolving immediately would produce `ownership_unverified` for nearly every caller regardless of intent — simply because they hadn't had a chance to act between the two calls. `FileClaimForm.tsx` now surfaces the DNS TXT record instructions immediately after filing and waits for an explicit "Resolve claim" click, giving the caller a real window to publish the record first if they want to.
