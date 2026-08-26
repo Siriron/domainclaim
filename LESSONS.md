@@ -13,10 +13,11 @@ a different app and hasn't read this file, it will not automatically
 know any of Part 0's rules — they aren't in the shared document the
 way Bugs 1–10 are. Part 0 below is written to stand alone for that
 reason: read it before starting a new build even outside DomainClaim's
-own repo, since these five rules are general project discipline, not
-DomainClaim-specific facts. Parts 1–6 are this build's own dated
+own repo, since these six rules are general project discipline, not
+DomainClaim-specific facts. Parts 1–7 are this build's own dated
 story — the evidence and reasoning behind Part 0's rules, plus
-everything that's genuinely specific to DomainClaim itself.
+everything that's genuinely specific to DomainClaim itself, including
+a real portal rejection and its fix (Part 7).
 
 ---
 
@@ -109,6 +110,32 @@ phase like a challenge round), proactively restate the full
 transaction sequence so far as a short numbered list — method, result,
 in order — rather than only reconstructing it reactively once the
 person expresses confusion (see Part 5.2).
+
+### 0.7 A concept can pass Test 1 as written and still let anyone assert someone else's claim
+
+Test 1 asks "who benefits from a false verdict" — DomainClaim answered
+that correctly the first time (a claimant benefits from a false
+control_confirmed). But a real portal rejection (Part 7 below) found a
+gap Test 1's question doesn't directly probe: the verdict verified an
+ABSTRACT fact ("does this identity string match RDAP's public text")
+rather than a fact SPECIFIC TO THE CALLER ("does the person calling
+this method right now actually control this domain"). Nothing checked
+`gl.message.sender_address` against the domain at all — anyone could
+type a well-known company's name into `claimed_identity` for a domain
+that company owns but they don't, and reach `control_confirmed` purely
+by knowing the right string, no relationship to the domain required.
+**The added check, for any future concept:** after confirming who
+benefits from a false verdict, ask separately — does reaching the
+favorable verdict require proving something specific to the caller
+(their identity, their control, their authorization), or does it only
+require asserting a fact that's true regardless of who's asking? If
+it's the latter, the concept verifies the wrong thing even though Test
+1 technically "passes" — and needs a genuine caller-binding mechanism
+(a signed challenge, a DNS/file-based control proof, an on-chain
+credential check) before it's actually sound. This is a different
+failure mode than 0.4/0.5's evidence-source-quality lessons: those are
+about whether the EVIDENCE is trustworthy; this is about whether the
+evidence, however trustworthy, is even bound to the right PERSON.
 
 ---
 
@@ -536,13 +563,213 @@ clean. Both outcomes were only knowable by actually running the check.
 
 ---
 
+## Part 7 — The real portal rejection, and the fix (Aug 24-25 2026)
+
+Everything in Parts 1-6 describes the build that got submitted and
+rejected. This part covers what happened after: a real reviewer
+verdict, a real structural gap, and the fix — the single most
+consequential thing that's happened to this contract, and the reason
+Part 0.7 exists.
+
+### 7.1 The verbatim rejection
+
+Submitted Aug 24 2026 to the Projects track. Rejected Aug 25 2026.
+Verbatim reviewer feedback: *"control_confirmed only matches public
+RDAP identity text and never proves the filer controls the domain. A
+stronger version should bind the caller to a DNS or signed ownership
+challenge and test the void/challenge lifecycle end to end."*
+
+This is worth reading exactly, not summarized, because the precision
+matters: the reviewer named the specific verdict label
+(`control_confirmed`), the specific mechanism gap (identity text vs.
+filer proof), and the specific fix category (DNS or signed challenge)
+— all three in one sentence, with no ambiguity about what needed to
+change.
+
+### 7.2 What the gap actually was, and why the framework didn't catch it
+
+Test 1 (concept evaluation) was run correctly and DomainClaim
+genuinely passed it: a claimant benefits from a false
+`control_confirmed`, a true registrant benefits from a false verdict
+the other way. But Test 1's question — "who benefits from a false
+verdict" — is about the STAKES, not about whether the mechanism
+verifies the right thing to determine the verdict honestly. The
+contract could correctly identify that stakes existed, build a
+technically rigorous nondet/consensus/challenge apparatus around
+judging RDAP text, and still never check whether
+`gl.message.sender_address` (the actual caller) had any relationship
+to the domain being judged at all. Two different callers, one who
+truly owns `example.com` and one who's never touched it, would receive
+the identical `control_confirmed` verdict for the identical
+`claimed_identity` string — the contract had no way to tell them
+apart. This is now written up as a new, generalized concept-evaluation
+principle in Part 0.7 above: Test 1 needs a companion check asking
+whether the verdict binds to the specific caller or only to an
+abstract, caller-independent fact.
+
+### 7.3 Why appeal was rejected as the response, and resubmit was chosen instead
+
+The portal offers two paths on a rejection: appeal (one per
+submission, asking a reviewer to reconsider with missed context) or
+resubmit-corrected (a new, editable copy of the submission, consuming
+a fresh weekly Project-track slot — confirmed directly from the
+portal's own "1 of 2 Project slots used this week" UI state at
+resubmission time, not assumed). Appeal was explicitly ruled out: the
+reviewer's finding was correct, not a case of missed context, so
+appealing would have asked a reviewer to reverse a correct decision.
+Resubmit-with-a-real-fix was the honest path, and it also preserves
+the one available appeal for a future case where it's actually
+warranted rather than spending it here.
+
+### 7.4 The fix mechanism, chosen and researched before writing code
+
+Three real design questions were worked through, in order, before any
+code changed:
+
+**Which proof mechanism — DNS or HTTP well-known-path?** The reviewer
+named both as acceptable ("DNS or signed ownership challenge"). DNS
+TXT was chosen deliberately over HTTP well-known-path for a specific,
+stated reason: DNS-zone control (the ability to publish an arbitrary
+record under a domain) is the SAME level of access as changing that
+domain's nameservers or registrar — genuine domain control. HTTP
+well-known-path control can be true of a subdomain host or a
+CDN/reverse-proxy operator who doesn't control the domain's
+registration at all — a real, weaker guarantee for the exact question
+this concept needs answered. This is also the pattern real systems
+(ACME/Let's Encrypt DNS-01, Google Search Console, Cloudflare) use for
+exactly this purpose, not an invented mechanism.
+
+**How to query DNS from a GenVM contract with no native DNS
+primitive?** GenVM's documented nondet capabilities are web fetch and
+LLM calls — no confirmed native DNS-lookup tool. Rather than assume
+one exists or guess at a workaround, DNS-over-HTTPS (a real, documented
+JSON-over-HTTP API — Cloudflare's `cloudflare-dns.com/dns-query`) was
+used, fetched via the exact same `gl.nondet.web.get()` mechanism
+already proven for RDAP and IANA bootstrap fetching. Before writing
+the parser, `gl.nondet.web.get()`'s support for custom headers (this
+endpoint requires `Accept: application/dns-json`) was confirmed
+directly against GenLayer's own SDK reference page
+(`sdk.genlayer.com/main/api/genlayer.html`), which documents `.get()`,
+`.post()`, `.delete()`, `.head()`, and `.patch()` as all accepting a
+`headers: dict[str, str | bytes]` keyword argument — not assumed or
+guessed at.
+
+**A real, load-bearing gotcha found via research, not discovered
+live:** Cloudflare's DoH JSON response returns TXT record values WITH
+the DNS wire-format quote characters still embedded in the string — a
+TXT record whose real value is `hello` comes back as the four-
+character-longer string `"hello"`, quotes included. Confirmed via
+multiple independent sources: a real bug report showing unescaped
+embedded quotes in this exact response shape (later fixed), and
+Cloudflare's own documentation noting no formal IETF RFC governs this
+JSON schema at all, so behavior isn't guaranteed uniform across
+providers. The comparison logic strips a single leading and trailing
+quote character defensively, rather than assuming zero, one, or two
+layers of quoting — the same defensive posture this contract's
+existing `_coerce_*` helpers already apply to LLM output, now
+confirmed to generalize to a different untrusted-format boundary (a
+public API's own response encoding, not an LLM's).
+
+### 7.5 A design decision that mattered as much as the mechanism itself: what does "not verified" mean, and does it need the LLM at all?
+
+Two decisions here, both worth stating explicitly since getting either
+wrong would have reintroduced a version of the same rejected gap in a
+new place:
+
+**DNS verification is fully deterministic — no LLM involved.** A TXT
+record equality check needs no interpretation, unlike judging whether
+RDAP identity text supports a claim. Running it through the LLM would
+have been pure overhead and a new, unnecessary source of
+non-determinism for a question with a definite yes/no answer. The
+final leader/validator design keeps the LLM scoped to exactly what it
+was always scoped to (the RDAP-identity question) and does the DNS
+check as plain, independently-re-derivable Python inside the same
+nondet closure — two genuinely separate signals combined
+deterministically, not blended into one fuzzier judgment.
+
+**The LLM's own output must never be trusted to directly assert
+`control_confirmed` or grant itself ownership proof — but this was
+originally implemented wrong, caught, and fixed within the same
+editing session.** The first version of this fix HARD-REJECTED
+(`raise gl.vm.UserError`) any raw LLM output containing "control_
+confirmed" or "ownership_unverified" as its verdict string, reasoning
+that these were "reserved labels" only the deterministic DNS check
+should assign. On reflection this was actually wrong and would have
+broken every legitimate resolution: the charter correctly invites the
+LLM to say "RDAP text supports this identity," and the natural word
+for that is `control_confirmed` — rejecting it outright would fail
+every well-behaved response. The corrected design: the LLM's raw
+`control_confirmed` output is treated as a legitimate but NON-FINAL
+signal ("RDAP text supports this," nothing about DNS), and Python code
+downstream re-derives the actual final verdict by combining that
+signal with the independently-checked `dns_verified` boolean — the LLM
+is never blocked from saying `control_confirmed`, it's simply never
+trusted as the last word on it. **The lesson:** when adding a
+deterministic override for an LLM-produced label, the instinct to
+"reject the label outright so the deterministic check is authoritative"
+is usually wrong — it conflates "don't trust this value as final" with
+"don't allow this value to be produced at all," and the second one
+breaks legitimate output. The correct pattern is: let the label
+through, then re-derive the trusted final value from it plus the
+deterministic signal — never gate on the raw label's mere presence.
+This was caught by re-reading the just-written code with the actual
+charter's instructions in mind, not by live testing — worth noting as
+a case where catching a self-introduced bug happened during the
+writing itself, not the audit pass afterward.
+
+### 7.6 The frontend needed a structural change, not a patch, once resolve could legitimately wait on the caller
+
+The original frontend fired `file_claim` then `resolve_claim`
+automatically, back to back, in one handler — reasonable when
+resolution depended only on RDAP. Once resolution could also depend on
+a DNS record the caller needs time to go publish, auto-resolving
+immediately would produce `ownership_unverified` for essentially every
+caller, even ones who fully intended to verify, just because they
+hadn't had time to act yet. The fix split filing and resolving into
+two explicit UI steps with the DNS instructions surfaced in between —
+not a visual tweak, a real change to the interaction model driven
+directly by the contract's own new two-signal design. **The lesson:**
+when a contract change adds a legitimate reason for a caller to pause
+mid-flow (here: go do something off-chain before the next call), check
+whether the frontend's existing flow assumes uninterrupted automation
+— it may need restructuring, not just new fields rendered into the
+same shape.
+
+### 7.7 Every downstream artifact needed the same fix propagated, checked explicitly rather than assumed complete
+
+Beyond the contract's core logic, six more places needed the same
+four-verdict, DNS-aware shape and were checked one at a time, not
+assumed to inherit correctness from the contract alone: the
+`resolve_challenge` path (an `OVERTURN` reaching `control_confirmed`
+needed its own independent DNS re-check — a challenge that could
+reinstate the exact rejected gap in a second code path would have been
+a real, embarrassing miss); both charters' prose (an LLM told nothing
+about the new DNS-gating would have no way to understand why its
+output might get overridden); the storage model and every view method
+(a new field silently missing from a response is a silent regression);
+and the docstring itself (a docstring still describing the old
+three-verdict, RDAP-only design would be actively misleading to a
+future reader, worse than no docstring at all). Each was checked via
+direct grep or read-through against the finished file, matching Part
+0.5's existing discipline, not assumed complete because the core fix
+was done.
+
+---
+
+
+
 ## Summary
 
-The five general rules referenced throughout this document — fresh
+The six general rules referenced throughout this document — fresh
 evidence over stored memory, read the real file, stress-test Test 4
-rather than asserting it, don't depend on unconfirmed redirects, and
-mechanically check any claimed improvement or consistency — are
-written out in full at the top of this file, in **Part 0**, since
-they aren't (by explicit choice) folded into Project Knowledge and
-this file is where they live. If you're revisiting this document later
-and only have time to reread one section, reread Part 0.
+rather than asserting it, don't depend on unconfirmed redirects,
+mechanically check any claimed improvement or consistency, and check
+whether a verdict binds to the specific caller or only to an
+abstract fact — are written out in full at the top of this file, in
+**Part 0**, since they aren't (by explicit choice) folded into Project
+Knowledge and this file is where they live. If you're revisiting this
+document later and only have time to reread one section, reread Part
+0 — and if you're revisiting specifically because of a rejection or a
+review-cycle fix, read Part 7 as well, which is the fullest worked
+example of what a real structural gap and its fix actually look like
+in this project's own history.
