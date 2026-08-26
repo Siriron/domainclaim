@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-type TraceStage = 'idle' | 'bootstrap' | 'registry' | 'entities' | 'done';
+type TraceStage = 'idle' | 'bootstrap' | 'registry' | 'entities' | 'dns' | 'done';
 
 interface RdapTraceProps {
   domain: string;
@@ -10,23 +10,31 @@ interface RdapTraceProps {
     verdict?: string;
     voidReason?: string;
     registrantSignal?: string;
+    dnsOwnershipVerified?: string;
     confidenceBps?: number;
     reasoningSummary?: string;
   } | null;
 }
 
-const STAGE_LABEL: Record<TraceStage, string> = {
-  idle: 'awaiting query',
+const STAGE_LABEL: Record<Exclude<TraceStage, 'idle' | 'done'>, string> = {
   bootstrap: 'resolving TLD → authoritative registry (IANA bootstrap)',
   registry: 'querying registry RDAP server',
   entities: 'reading entities[] for role: registrant',
-  done: 'complete',
+  dns: 'checking DNS TXT for domain-control proof',
 };
 
 const VERDICT_LABEL: Record<string, string> = {
   control_confirmed: 'CONTROL CONFIRMED',
   control_disputed: 'CONTROL DISPUTED',
   registrant_unresolvable: 'REGISTRANT UNRESOLVABLE',
+  ownership_unverified: 'OWNERSHIP UNVERIFIED',
+};
+
+const VERDICT_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
+  control_confirmed: 'good',
+  control_disputed: 'bad',
+  registrant_unresolvable: 'neutral',
+  ownership_unverified: 'neutral',
 };
 
 export default function RdapTrace({ domain, active, outcome }: RdapTraceProps) {
@@ -38,11 +46,13 @@ export default function RdapTrace({ domain, active, outcome }: RdapTraceProps) {
       return;
     }
     setStage('bootstrap');
-    const t1 = setTimeout(() => setStage('registry'), 900);
-    const t2 = setTimeout(() => setStage('entities'), 1900);
+    const t1 = setTimeout(() => setStage('registry'), 800);
+    const t2 = setTimeout(() => setStage('entities'), 1600);
+    const t3 = setTimeout(() => setStage('dns'), 2400);
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
+      clearTimeout(t3);
     };
   }, [active, domain]);
 
@@ -52,18 +62,22 @@ export default function RdapTrace({ domain, active, outcome }: RdapTraceProps) {
 
   const lines: { label: string; live: boolean }[] = [
     { label: `query  ${domain || '—'}`, live: stage !== 'idle' },
-    { label: STAGE_LABEL.bootstrap, live: ['bootstrap', 'registry', 'entities', 'done'].includes(stage) },
-    { label: STAGE_LABEL.registry, live: ['registry', 'entities', 'done'].includes(stage) },
-    { label: STAGE_LABEL.entities, live: ['entities', 'done'].includes(stage) },
+    { label: STAGE_LABEL.bootstrap, live: ['bootstrap', 'registry', 'entities', 'dns', 'done'].includes(stage) },
+    { label: STAGE_LABEL.registry, live: ['registry', 'entities', 'dns', 'done'].includes(stage) },
+    { label: STAGE_LABEL.entities, live: ['entities', 'dns', 'done'].includes(stage) },
+    { label: STAGE_LABEL.dns, live: ['dns', 'done'].includes(stage) },
   ];
+
+  const tone = outcome?.verdict ? VERDICT_TONE[outcome.verdict] : 'neutral';
+  const toneClass = tone === 'good' ? 'text-registry-soft' : tone === 'bad' ? 'text-stamp-soft' : 'text-file';
 
   return (
     <div className="rounded-sm border border-file-line bg-ink text-paper font-mono text-sm overflow-hidden">
       <div className="flex items-center gap-2 border-b border-ink-soft bg-ink-soft/40 px-4 py-2 text-xs tracking-wide text-file">
         <span className="h-2 w-2 rounded-full bg-registry-soft" />
-        rdap trace
+        rdap + dns trace
       </div>
-      <div className="px-4 py-4 space-y-2 min-h-[9rem]">
+      <div className="px-4 py-4 space-y-2 min-h-[10rem]">
         {stage === 'idle' && (
           <p className="text-file">no active query</p>
         )}
@@ -95,17 +109,12 @@ export default function RdapTrace({ domain, active, outcome }: RdapTraceProps) {
               </>
             ) : (
               <>
-                <p
-                  className={
-                    outcome.verdict === 'registrant_unresolvable'
-                      ? 'text-stamp-soft font-semibold'
-                      : 'text-registry-soft font-semibold'
-                  }
-                >
+                <p className={`font-semibold ${toneClass}`}>
                   {VERDICT_LABEL[outcome.verdict || ''] || outcome.verdict}
                 </p>
                 <p className="text-file text-xs mt-1">
-                  registrant_signal: {outcome.registrantSignal} · confidence:{' '}
+                  registrant_signal: {outcome.registrantSignal} · dns_ownership_verified:{' '}
+                  {outcome.dnsOwnershipVerified ?? '—'} · confidence:{' '}
                   {outcome.confidenceBps != null ? (outcome.confidenceBps / 10).toFixed(1) : '—'}%
                 </p>
                 {outcome.reasoningSummary && (

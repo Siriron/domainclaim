@@ -145,10 +145,16 @@ export default function ChallengePanel() {
             <span className="font-medium">{claim.status}</span>
           </p>
           {claim.outcome === 'judged' && (
-            <p className="text-sm">
-              <span className="text-file">verdict:</span>{' '}
-              <span className="font-medium">{claim.verdict}</span>
-            </p>
+            <>
+              <p className="text-sm">
+                <span className="text-file">verdict:</span>{' '}
+                <span className="font-medium">{claim.verdict}</span>
+              </p>
+              <p className="text-sm">
+                <span className="text-file">dns ownership verified:</span>{' '}
+                <span className="font-medium">{claim.dns_ownership_verified || '—'}</span>
+              </p>
+            </>
           )}
           {claim.outcome === 'void' && (
             <p className="text-sm">
