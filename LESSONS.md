@@ -756,6 +756,213 @@ was done.
 
 ---
 
+## Part 8 — Second review cycle: "More Information Needed" on the DNS-fix resubmission (Aug 26 2026)
+
+The fixed version from Part 7 was pushed and resubmitted, and passed
+the first rejection's specific concern (RDAP-text-only
+`control_confirmed`) — but a steward (Pavel Kolosov) came back with
+four more specific, narrower gaps in the SAME resubmission review, not
+a second full rejection. This section exists because the fix pattern
+here is structurally the same kind of finding as Part 7's — a real,
+narrow, load-bearing gap named precisely, not a vague "needs more
+polish" — and the same discipline (read the actual code the feedback
+is about, don't paraphrase-and-patch) applied again, cleanly, on a
+much smaller scale. Read this alongside Part 7, not instead of it.
+
+### 8.1 The four things named, and what was actually wrong at the source level
+
+The steward's note, read carefully against the real file rather than
+assumed from its wording alone, named four genuinely distinct gaps:
+
+1. **"Make challenge resolution reassess the fresh RDAP record against
+   the claimed identity"** — already correct; `resolve_challenge`'s
+   `leader_fn` already re-fetches RDAP fresh via the same
+   `_fetch_domain_rdap` path `resolve_claim` uses. No fix needed here;
+   confirmed by reading the code, not assumed from the feedback's
+   framing.
+2. **"Return validator-compatible results for RDAP failures"** — a
+   real bug: the re-fetch-failure branch inside `resolve_challenge`'s
+   `leader_fn` returned a dict with NO `dns_ownership_verified` key at
+   all, while `validator_fn` unconditionally checks that key is in
+   `("true", "false")` on every branch. `None not in (...)` is `True`,
+   so `validator_fn` returned `False` unconditionally — every RDAP
+   re-fetch failure during a challenge could never reach consensus,
+   regardless of how many validators agreed on `REJECT`. This is
+   exactly the kind of gap that's invisible until the specific code
+   path executes, the same lesson as every bug in section 4's catalog.
+3. **"Distinguish resolver failures from an absent TXT record"** — a
+   real bug in `_resolve_dns_txt_verification`: the "no Answer list"
+   branch returned `(True, False)` regardless of Cloudflare's DoH
+   `Status` field, collapsing a genuine resolver failure (SERVFAIL,
+   `Status: 2`) into the identical signal as an honest "caller hasn't
+   published yet" (`Status: 0` with zero records, or `Status: 3`
+   NXDOMAIN — both real, definitive answers). Confirmed against
+   Cloudflare's own documented RCODE semantics before fixing, not
+   assumed. Fixed by checking `Status` explicitly: `0`/`3` are real
+   answers (`ok=True`), anything else is a resolver failure
+   (`ok=False`) — and a THIRD state, `dns_status` (`verified` /
+   `not_verified` / `check_failed`), was added throughout so a
+   resolver hiccup no longer silently, permanently caps a claim at
+   `ownership_unverified` the same way a genuinely-checked absence
+   does. The pre-existing `dns_verified = bool(dns_ok and dns_matched)`
+   pattern at both call sites had ALREADY been throwing this exact
+   distinction away even before the helper function's own bug — fixing
+   only the helper without fixing both call sites would have been an
+   incomplete fix.
+4. **"Avoid silently judging truncated RDAP evidence"** — a real gap:
+   `_sanitize(rdap_json_text, _MAX_FETCH_LEN)` hard-truncates at 6000
+   chars with zero signal to the LLM or to storage that truncation
+   happened. A verbose registrar's RDAP record could be cut mid-object
+   and reasoned over as if complete. Fixed with a pre-sanitize
+   `_is_truncated()` check, surfaced explicitly in both prompts
+   (instructing the model to prefer the "can't tell" verdict/decision
+   over guessing when truncated), and threaded through both
+   leader/validator pairs into a new `evidence_truncated` field stored
+   on both `ClaimRecord` and `ChallengeRecord`.
+5. **"Bind each new claim or challenge ID to its own finalized
+   transaction instead of the latest global counter"** — checked
+   against GenLayer's actual documented `gl.message` surface
+   (`contract_address`, `sender_address`, `origin_address`, `value`,
+   `chain_id` — confirmed via live search against
+   docs.genlayer.com/developers/intelligent-contracts before writing
+   anything, not assumed from memory) before deciding how to respond:
+   there is no transaction-hash-shaped field exposed to contract code
+   at all, so a literal "bind to the transaction" fix would have meant
+   guessing at an unconfirmed API, which is precisely the mistake this
+   project's own methodology (section 6) exists to prevent. The
+   counters are also never touched inside a nondet closure anywhere in
+   this contract, so the specific reentrancy-style bug this phrasing
+   might suggest does not appear to be reachable given GenVM's
+   documented per-transaction execution model. What was added instead:
+   a defensive `assert cid not in self.claims` /
+   `assert chid not in self.challenges` immediately after each ID is
+   read, before it's used — cheap, uses only already-confirmed
+   `TreeMap` semantics, and turns a silent overwrite into a loud,
+   named revert if the "counters can't collide" assumption is ever
+   wrong. **This is flagged here as the one item in this response
+   where the fix is a defensive hardening rather than a confirmed
+   root-cause fix** — if a steward comes back saying this doesn't
+   address what they meant, the next step is to ask what GenLayer
+   mechanism they have in mind, not to guess again.
+
+### 8.2 The pattern from Part 7 held: fix every call site, not just the one the feedback pointed at
+
+Item 3 above is the clearest example: the feedback's wording ("absent
+TXT record") could be read as pointing only at
+`_resolve_dns_txt_verification`'s internals. But the two nested
+`leader_fn`s (in `resolve_claim` AND `resolve_challenge`) were ALSO
+independently collapsing `dns_ok`/`dns_matched` into a single boolean
+before this fix — meaning even a perfect fix to the helper function
+alone would have been silently thrown away one call frame up. Reading
+every call site of a function named in feedback, not just the
+function's own body, is the same "propagate to every downstream
+artifact" discipline Part 7.7 already named — it held again here at a
+much smaller scale.
+
+### 8.3 A genuinely new, honest gap surfaced by fixing an old one
+
+Adding `dns_status`/`evidence_truncated` to `ClaimRecord` exposed a
+question the original design hadn't needed to ask: should the
+CHALLENGE record itself also carry these fields, even on `UPHOLD`/
+`REJECT` where the claim's own fields correctly stay untouched? The
+claim only gets its `dns_status`/`evidence_truncated` overwritten on
+`OVERTURN` (by design — an upheld or rejected challenge shouldn't
+touch the original resolution's stored facts). But that meant, before
+this fix, `get_challenge` had NO way to show what a specific challenge
+round's own re-derivation actually found on `UPHOLD`/`REJECT` — a
+steward reviewing an `UPHOLD` decision couldn't tell whether it was
+reached against a clean re-fetch or against truncated evidence / a
+failed DNS check. This wasn't asked for directly, but leaving it out
+would have been inconsistent with fixing the identical visibility gap
+everywhere else in this response. Added three fields to
+`ChallengeRecord` (`dns_ownership_verified`, `dns_status`,
+`evidence_truncated`), written unconditionally on every
+`resolve_challenge` call regardless of decision, distinct from the
+CLAIM's own fields which stay conditional on `OVERTURN`. **The
+lesson:** fixing a visibility gap on one path can reveal the identical
+gap, previously masked, on an adjacent path that shares the same
+underlying data — check for that explicitly rather than declaring the
+fix complete once the originally-named path is closed.
+
+### 8.4 What was deliberately NOT done, and why
+
+Two things were considered and explicitly deferred rather than done
+silently:
+- Querying multiple independent DoH resolvers and requiring agreement,
+  which would strengthen the `check_failed`/`not_verified` distinction
+  further against a single resolver being wrong. This was already a
+  named, deliberate gap before this review cycle (see the module
+  docstring's "DELIBERATE GAPS" section) and nothing in the steward's
+  feedback specifically asked for it — expanding scope here would have
+  diluted a resubmission note that's already covering five distinct
+  points.
+- A response-time SLA or deadline-precommitment mechanic for the DNS
+  ownership proof itself (e.g. "the caller has N days to publish
+  before the claim expires"). Not asked for, and RDAP/DNS control is
+  re-checkable indefinitely via the existing challenge mechanism
+  regardless — adding a deadline here would be solving a problem this
+  concept doesn't actually have.
+
+The general rule this confirms, worth stating explicitly since it
+isn't yet in Part 0: **when a steward names N specific things, fix
+exactly those N things (plus anything a fix to one of them structurally
+requires, per 8.3 above) and name explicitly what you're deliberately
+not touching, rather than using the review cycle as an opportunity to
+also fix every other named-but-deferred gap in the docstring.** A
+resubmission note that says "I also fixed X, Y, Z which nobody asked
+about" reads as scope drift to a reviewer checking specifically whether
+the FOUR things they named got fixed, and makes that check harder.
+
+### 8.5 STATE AS OF DEPLOYMENT (Aug 27 2026) — read this before assuming anything beyond the deploy itself is confirmed
+
+The fixes described in this Part were deployed to StudioNet on Aug 27
+2026 at `0x03E5E595834cAF1c50Eb88229eA1e6520B344b88` (deploy tx
+`0xefddbaa290bd51e8fac4d8a2a055f8b81a87a79910dbee7707912b2df663c5d3`,
+confirmed `SUCCESS`/`Accepted`/`FINALIZED` directly against the
+explorer). This section originally said "nothing has been re-deployed"
+— that is now out of date; the deploy happened. What follows replaces
+that earlier state, not adds to it.
+
+- **The deploy itself succeeded** — a genuine, meaningful signal. A
+  syntax error or a GenVM schema-load failure (the exact class of
+  failure `"py-genlayer:test"` used to cause, see section 3) would
+  have failed here. This confirms the file is valid, loadable GenVM
+  Python. It does NOT confirm any write method's logic is correct.
+- **By explicit instruction, none of the four steward-named scenarios
+  (or the two ID-assertion guards) have been live-tested, and this
+  build will NOT be live-tested before being considered complete.**
+  This is a deliberate, one-time exception to this project's own
+  standing "live-test before considering it done" discipline (section
+  9.2, checklist item 4) for this specific fix cycle — not an
+  oversight, not a claim that testing happened and passed, and not a
+  precedent for future builds. State this plainly in the resubmission
+  note rather than letting the deploy's success imply more than it
+  does.
+- **Nothing has been pushed to the GitHub repo yet** as of this
+  writing — the repo update (contract file, `LESSONS.md`, `README.md`,
+  `docs/deployment.md`, `docs/contracts.md`, `docs/frontend.md`, and
+  the three frontend components/pages touched for the new fields) is
+  ready in this session's working copy but the actual `git push` is a
+  separate, human action not yet confirmed done.
+- The full section 4 ten-item nondet audit WAS run against the
+  complete rewritten file (mechanically, via grep/script, per section
+  13.5's confirmed process), twice, and passed clean both times. This
+  confirms the fix doesn't violate any of the ten confirmed structural
+  rules — it does NOT confirm the fix behaves correctly against real
+  RDAP/DNS infrastructure, which only live testing (deliberately not
+  done this cycle) could confirm.
+- **When writing the resubmission note for this cycle:** use the
+  confirmed-working "state what changed, what proves it's fixed,
+  include live evidence inline" shape from project knowledge section
+  10.1 — but be honest that "what proves it's fixed" here is a
+  mechanical audit and a successful deploy, NOT live execution against
+  real infrastructure, since that's what actually happened. Do not
+  imply live verification occurred. If a steward asks for live proof
+  specifically, that is the correct next request to act on, not a sign
+  this response's honesty was wrong.
+
+---
+
 
 
 ## Summary

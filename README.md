@@ -62,7 +62,7 @@ DomainClaim is an on-chain attestation of who controls a domain. A caller names 
 
 A resolved claim lands in one of two structurally distinct shapes:
 
-- **judged** — a real verdict: `control_confirmed` (RDAP identity match AND DNS ownership both verified), `ownership_unverified` (RDAP identity matched, but domain control was never proven), `control_disputed` (RDAP shows a different, specific registrant), or `registrant_unresolvable` if RDAP genuinely contains no identifying registrant data. This last case is expected to be the common one, not a rare edge case — most consumer domain registrations use privacy proxies by default, and live testing confirmed this on real domains. Publishing the DNS record is always optional: a claim resolved without it still gets an honest verdict, capped at `ownership_unverified` rather than reaching `control_confirmed`.
+- **judged** — a real verdict: `control_confirmed` (RDAP identity match AND DNS ownership both verified), `ownership_unverified` (RDAP identity matched, but domain control was never proven), `control_disputed` (RDAP shows a different, specific registrant), or `registrant_unresolvable` if RDAP genuinely contains no identifying registrant data. This last case is expected to be the common one, not a rare edge case — most consumer domain registrations use privacy proxies by default, and live testing confirmed this on real domains. Publishing the DNS record is always optional: a claim resolved without it still gets an honest verdict, capped at `ownership_unverified` rather than reaching `control_confirmed`. Every judged resolution also carries `dns_status` (`verified` / `not_verified` / `check_failed` — distinguishing a genuine, checked absence of the DNS record from a resolver failure that never got a reliable answer) and `evidence_truncated` (whether the RDAP record fed into this specific resolution was cut off before the model saw it) — see `docs/contracts.md` for the full field reference.
 - **void** — no verdict was reached at all. A permanent void (an invalid domain, or one that doesn't exist as an RDAP object) blocks the same domain+identity pair from ever being refiled. A transient void (a bootstrap or fetch failure) can be retried.
 
 Both outcomes go through full validator consensus — a void outcome is never a silent, one-node revert; it's an agreed-upon, on-chain fact, the same as a real verdict. The verdict assignment between `control_confirmed` and `ownership_unverified` is fully deterministic, never left to LLM discretion — see [`docs/contracts.md`](./docs/contracts.md) for the mechanism.
@@ -79,9 +79,13 @@ Both outcomes go through full validator consensus — a void outcome is never a 
 
 | Network | Address | Explorer |
 |---|---|---|
-| StudioNet | `0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3` | [View](https://explorer-studio.genlayer.com/address/0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3) |
+| StudioNet | `0x03E5E595834cAF1c50Eb88229eA1e6520B344b88` | [View](https://explorer-studio.genlayer.com/address/0x03E5E595834cAF1c50Eb88229eA1e6520B344b88) |
 
 </div>
+
+<br />
+
+Supersedes `0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3` (the DNS-ownership-proof-fix version) and `0x4A2f5830676b1Fea8A8873Ad4daa75c2CaCD7477` (the original pre-fix version). See `docs/deployment.md` for the full deployment history and current testing status.
 
 <br />
 
@@ -119,12 +123,14 @@ LICENSE                      MIT
 
 <div align="center">
 
-![Tested](https://img.shields.io/badge/prior%20version%27s%20lifecycle-live%20tested-brightgreen?style=flat-square)
-![Untested](https://img.shields.io/badge/dns%20ownership%20mechanism-not%20yet%20live%20tested-yellow?style=flat-square)
+![Tested](https://img.shields.io/badge/DNS%20fix%20cycle%20lifecycle-live%20tested-brightgreen?style=flat-square)
+![Untested](https://img.shields.io/badge/second%20review%20cycle%20fix-not%20live%20tested-yellow?style=flat-square)
 
 </div>
 
-**This version has not yet been live-tested end to end** — it was rebuilt in direct response to the Aug 24 2026 portal rejection and audited fully (syntax, the ten-item nondet catalog, cross-file consistency checks) but not yet exercised against real infrastructure. A prior version of this contract's core lifecycle (`file_claim`, `resolve_claim`, `challenge_claim`, `resolve_challenge`, `finalize_claim`) was live-verified on StudioNet with empty stderr throughout, including a real challenge round — but that testing predates the DNS ownership-proof mechanism this version adds, and none of it exercised the new `ownership_unverified` verdict or the DNS re-verification path specifically. **Not yet tested at all:** the DNS TXT verification flow end to end (publish a record, confirm `control_confirmed` is reached only with it, confirm `ownership_unverified` without it), the unchallenged `finalize_claim` path, and `control_disputed` against a real conflicting RDAP record. See [`docs/deployment.md`](./docs/deployment.md) for the complete, itemized testing status. The frontend has not yet been deployed to a live URL.
+**The current deployed version (`0x03E5E595834cAF1c50Eb88229eA1e6520B344b88`) has not been live-tested at all, by deliberate decision for this specific fix cycle** — the file was rebuilt in direct response to a steward's "More Information Needed" note (Aug 26 2026) and passed the full section-4 nondet audit (syntax, all ten structural rules, field-by-field validator cross-checks), but nothing beyond the deploy transaction itself has been run against it. This is a real, named gap in confidence, not evidence the fix is wrong — see `docs/deployment.md`'s testing-status section for exactly what mechanical verification has and hasn't been done.
+
+What *was* live-tested, on the prior deployment this one supersedes (`0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3`): the full `file_claim → resolve_claim → challenge_claim → resolve_challenge → finalize_claim` lifecycle, with empty stderr throughout and a real challenge round resolving `REJECT`. None of that testing exercised any of the five things the current fix changes (see `LESSONS.md` Part 8) — it predates all of them. **Still untested from before this cycle, and unaffected by it:** the DNS TXT verification flow against a real, live-published record; `control_disputed` against a genuinely conflicting RDAP record; and the unchallenged `finalize_claim` path. The frontend has not yet been deployed to a live URL.
 
 <br />
 
