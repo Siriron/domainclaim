@@ -16,23 +16,28 @@ Full source: [`contracts/domain_claim.py`](../contracts/domain_claim.py)
 
 | Method | Description |
 |---|---|
-| `get_claim(claim_id)` | Full claim record, including `dns_ownership_verified`. |
-| `get_challenge(challenge_id)` | Full challenge record. |
+| `get_claim(claim_id)` | Full claim record, including `dns_ownership_verified`, `dns_status`, and `evidence_truncated`. |
+| `get_challenge(challenge_id)` | Full challenge record, including this specific challenge round's own re-derived `dns_ownership_verified`, `dns_status`, and `evidence_truncated` — recorded unconditionally regardless of decision, distinct from the underlying claim's fields (which only update on `OVERTURN`). |
 | `get_claims_for_domain(domain)` | Claim IDs filed against a given domain. |
 | `is_pair_permanently_voided(domain, claimed_identity)` | Whether a domain+identity pair was permanently voided and can never be refiled. |
 | `get_verification_instructions(claim_id)` | Re-derives the expected DNS TXT record name/value for an already-filed claim — safe to call at any time, before or after resolution. |
-| `get_next_claim_id()` / `get_next_challenge_id()` | Next auto-incrementing ID. |
+| `get_next_claim_id()` / `get_next_challenge_id()` | Next auto-incrementing ID. `file_claim`/`challenge_claim` each defensively assert the derived ID is not already in use before writing (see the second review-cycle fix, `LESSONS.md` Part 8) — this does not change the IDs these views report, only guards against the counter ever silently colliding with existing records. |
 
 ## Verdict shape
 
 Every `resolve_claim`/`resolve_challenge` result is one of two structurally distinct outcomes:
 
 - **judged** — one of four verdicts:
-  - `control_confirmed` — RDAP identity text supports the claim, AND a live DNS TXT lookup confirmed the caller published the exact expected verification token.
-  - `ownership_unverified` — RDAP identity text supports the claim, but DNS ownership was not proven (the record wasn't published, hasn't propagated yet, or the lookup failed transiently). **This is the fix for the Aug 24 2026 portal rejection** — RDAP-text agreement alone can never reach `control_confirmed` on its own.
+  - `control_confirmed` — RDAP identity text supports the claim, AND a live DNS TXT lookup confirmed the caller published the exact expected verification token (`dns_status: "verified"`).
+  - `ownership_unverified` — RDAP identity text supports the claim, but DNS ownership was not proven this attempt. This covers two distinct, separately-recorded cases (see `dns_status` below): the record genuinely wasn't found (`"not_verified"` — not published yet, or hasn't propagated) or the DNS lookup itself failed to produce a reliable answer (`"check_failed"` — worth retrying once the resolver issue clears). **This is the fix for the Aug 24 2026 portal rejection** — RDAP-text agreement alone can never reach `control_confirmed` on its own.
   - `control_disputed` — RDAP shows a different, specific, identifiable registrant that actively contradicts the claim.
   - `registrant_unresolvable` — RDAP contains no registrant-role entity with genuine identifying data at all (redacted, missing, or privacy-proxied).
 - **void** — `INVALID_DOMAIN_SYNTAX`, `RDAP_OBJECT_CLASS_MISMATCH` (both permanent, block refiling), or `TLD_NOT_IN_RDAP_BOOTSTRAP`, `BOOTSTRAP_FETCH_FAILED`, `RDAP_FETCH_FAILED` (all transient, retryable).
+
+Every judged resolution also carries two independently-fixed signals from the second review cycle (Aug 26 2026, `LESSONS.md` Part 8):
+
+- **`dns_status`** — `"verified"` / `"not_verified"` / `"check_failed"`. Distinguishes a genuine, checked "no matching record" (Cloudflare DoH `Status` 0 or 3/NXDOMAIN — both real, definitive answers) from a resolver failure that never got a reliable answer at all (`Status` 2/SERVFAIL, or a missing/malformed `Status` field). Only `"verified"` counts as DNS proof; both other states cap the verdict at `ownership_unverified`, but only `"check_failed"` implies a retry might change the result.
+- **`evidence_truncated`** — `"true"` / `"false"`. `"true"` means the RDAP JSON fed into this specific resolution was cut off (over the 6000-character fetch cap) before the model ever saw the complete record. The judgment prompt tells the model explicitly when this happens and asks it to prefer `registrant_unresolvable`/`REJECT` over confidently guessing at a cut record — but this is a instruction to the model, not a contract-enforced guarantee, so a confident-looking verdict alongside `evidence_truncated: "true"` deserves real scrutiny from anyone reading it.
 
 ## How `control_confirmed` vs. `ownership_unverified` is decided
 
@@ -52,4 +57,4 @@ This assignment is fully deterministic and never left to LLM discretion, in both
 
 ## Deployed address
 
-StudioNet: `0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3` — **this hosts the fixed contract described above** (DNS ownership-proof mechanism included), redeployed after the Aug 24 2026 rejection. See `docs/deployment.md` for full testing status: no transactions have been run against this address yet, so none of the mechanism described in this file — including the DNS TXT check itself — is confirmed live at this address specifically.
+StudioNet: `0x03E5E595834cAF1c50Eb88229eA1e6520B344b88` — hosts the **Aug 27, second-review-cycle fix** described throughout this file (`dns_status`, `evidence_truncated`, the `resolve_challenge` validator-agreement fix, and the ID-collision assertions). Deploy transaction `0xefddbaa290bd51e8fac4d8a2a055f8b81a87a79910dbee7707912b2df663c5d3`, confirmed `SUCCESS`/`Accepted`/`FINALIZED`. Supersedes `0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3` (the first-review-cycle DNS-ownership-proof fix). **By explicit instruction, no transactions beyond the deploy itself have been run against this address** — see `docs/deployment.md`'s testing-status section for exactly what that does and doesn't mean for confidence in the fix.
