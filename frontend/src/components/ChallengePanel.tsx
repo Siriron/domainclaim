@@ -153,7 +153,15 @@ export default function ChallengePanel() {
               <p className="text-sm">
                 <span className="text-file">dns ownership verified:</span>{' '}
                 <span className="font-medium">{claim.dns_ownership_verified || '—'}</span>
+                {claim.dns_status && (
+                  <span className="text-file"> ({claim.dns_status})</span>
+                )}
               </p>
+              {claim.evidence_truncated === 'true' && (
+                <p className="text-xs text-stamp">
+                  ⚠ the RDAP evidence for this resolution was truncated
+                </p>
+              )}
             </>
           )}
           {claim.outcome === 'void' && (
@@ -251,6 +259,19 @@ export default function ChallengePanel() {
             <span className="text-file">final verdict:</span>{' '}
             <span className="font-medium">{resolution.final_verdict}</span>
           </p>
+          {resolution.dns_status && (
+            <p className="text-sm">
+              <span className="text-file">this round's dns re-check:</span>{' '}
+              <span className="font-medium">
+                {resolution.dns_ownership_verified || '—'} ({resolution.dns_status})
+              </span>
+            </p>
+          )}
+          {resolution.evidence_truncated === 'true' && (
+            <p className="text-xs text-stamp">
+              ⚠ the re-fetched RDAP evidence for this challenge round was truncated
+            </p>
+          )}
           {resolution.resolution_summary && (
             <p className="text-sm text-ink-soft leading-relaxed">{resolution.resolution_summary}</p>
           )}

@@ -11,6 +11,8 @@ interface RdapTraceProps {
     voidReason?: string;
     registrantSignal?: string;
     dnsOwnershipVerified?: string;
+    dnsStatus?: string;
+    evidenceTruncated?: string;
     confidenceBps?: number;
     reasoningSummary?: string;
   } | null;
@@ -35,6 +37,26 @@ const VERDICT_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
   control_disputed: 'bad',
   registrant_unresolvable: 'neutral',
   ownership_unverified: 'neutral',
+};
+
+// dns_status is a genuinely three-way signal, not the same thing as a
+// second copy of dns_ownership_verified — "not_verified" (checked, the
+// record genuinely isn't there yet) and "check_failed" (the DNS lookup
+// itself didn't get a reliable answer this attempt) look identical from
+// dns_ownership_verified alone ("false" either way), but only the
+// second one is worth retrying. Shown separately so a caller can tell
+// the difference at a glance rather than reading dns_ownership_verified
+// as if it were the whole story.
+const DNS_STATUS_LABEL: Record<string, string> = {
+  verified: 'verified — TXT record matched',
+  not_verified: 'not verified — no matching record found',
+  check_failed: 'check failed — DNS lookup unreliable, worth retrying',
+};
+
+const DNS_STATUS_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
+  verified: 'good',
+  not_verified: 'neutral',
+  check_failed: 'bad',
 };
 
 export default function RdapTrace({ domain, active, outcome }: RdapTraceProps) {
@@ -113,10 +135,27 @@ export default function RdapTrace({ domain, active, outcome }: RdapTraceProps) {
                   {VERDICT_LABEL[outcome.verdict || ''] || outcome.verdict}
                 </p>
                 <p className="text-file text-xs mt-1">
-                  registrant_signal: {outcome.registrantSignal} · dns_ownership_verified:{' '}
-                  {outcome.dnsOwnershipVerified ?? '—'} · confidence:{' '}
+                  registrant_signal: {outcome.registrantSignal} · confidence:{' '}
                   {outcome.confidenceBps != null ? (outcome.confidenceBps / 10).toFixed(1) : '—'}%
                 </p>
+                {outcome.dnsStatus && (
+                  <p
+                    className={`text-xs mt-1 ${
+                      DNS_STATUS_TONE[outcome.dnsStatus] === 'good'
+                        ? 'text-registry-soft'
+                        : DNS_STATUS_TONE[outcome.dnsStatus] === 'bad'
+                        ? 'text-stamp-soft'
+                        : 'text-file'
+                    }`}
+                  >
+                    dns: {DNS_STATUS_LABEL[outcome.dnsStatus] || outcome.dnsStatus}
+                  </p>
+                )}
+                {outcome.evidenceTruncated === 'true' && (
+                  <p className="text-stamp-soft text-xs mt-1">
+                    ⚠ RDAP evidence was truncated before this verdict was reached — treat with extra scrutiny
+                  </p>
+                )}
                 {outcome.reasoningSummary && (
                   <p className="text-paper/70 text-xs mt-2 leading-relaxed">
                     {outcome.reasoningSummary}

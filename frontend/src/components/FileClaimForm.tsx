@@ -11,6 +11,8 @@ interface Outcome {
   voidReason?: string;
   registrantSignal?: string;
   dnsOwnershipVerified?: string;
+  dnsStatus?: string;
+  evidenceTruncated?: string;
   confidenceBps?: number;
   reasoningSummary?: string;
 }
@@ -26,6 +28,19 @@ const VERDICT_COPY: Record<string, { label: string; tone: 'good' | 'bad' | 'neut
   control_disputed: { label: 'Control disputed — RDAP shows a different, specific registrant.', tone: 'bad' },
   registrant_unresolvable: { label: 'Registrant unresolvable — RDAP discloses no identifying registrant data.', tone: 'neutral' },
   ownership_unverified: { label: 'Ownership unverified — RDAP identity matched, but domain control was never proven.', tone: 'neutral' },
+};
+
+// ownership_unverified has two genuinely distinct causes as of the
+// second review-cycle fix (see LESSONS.md Part 8): a real, checked
+// absence of the TXT record ("not_verified" — try publishing it), or
+// the DNS check itself failing to get a reliable answer this attempt
+// ("check_failed" — try resolving again, the fix might already be
+// there). Shown as a specific follow-up line rather than folded into
+// VERDICT_COPY's static label, since only one of the two is actually
+// worth telling the caller to retry.
+const DNS_STATUS_FOLLOWUP: Record<string, string> = {
+  check_failed: 'The DNS lookup itself did not get a reliable answer this attempt — this is a resolver-side issue, not a confirmed absence of your record. Resolving again may produce a different result.',
+  not_verified: 'No matching TXT record was found. If you already published it, DNS propagation can take time — try resolving again shortly.',
 };
 
 export default function FileClaimForm({ onFiled }: { onFiled?: (claimId: number) => void }) {
@@ -103,6 +118,8 @@ export default function FileClaimForm({ onFiled }: { onFiled?: (claimId: number)
           verdict: claim.verdict,
           registrantSignal: claim.registrant_signal,
           dnsOwnershipVerified: claim.dns_ownership_verified,
+          dnsStatus: claim.dns_status,
+          evidenceTruncated: claim.evidence_truncated,
           confidenceBps: Number(claim.confidence_bps),
           reasoningSummary: claim.reasoning_summary,
         });
@@ -248,6 +265,16 @@ export default function FileClaimForm({ onFiled }: { onFiled?: (claimId: number)
                 }
               >
                 {verdictCopy.label}
+              </p>
+            )}
+            {outcome.dnsStatus && DNS_STATUS_FOLLOWUP[outcome.dnsStatus] && (
+              <p className="text-xs text-file leading-relaxed">
+                {DNS_STATUS_FOLLOWUP[outcome.dnsStatus]}
+              </p>
+            )}
+            {outcome.evidenceTruncated === 'true' && (
+              <p className="text-xs text-stamp leading-relaxed">
+                ⚠ The RDAP record fetched for this resolution was too large and was truncated before being judged — treat this verdict with extra scrutiny.
               </p>
             )}
             <button
