@@ -98,6 +98,37 @@ const SECTIONS: Section[] = [
             failure) can be retried.
           </li>
         </ul>
+        <p className="mt-3">
+          Every judged resolution also carries two independent signals, added
+          in a second review cycle to close a gap where these facts were
+          previously indistinguishable from a plain true/false:
+        </p>
+        <ul className="list-disc pl-5 space-y-2">
+          <li>
+            <span className="font-mono text-xs bg-paper-dim px-1.5 py-0.5 rounded-sm">dns_status</span>{' '}
+            — <span className="font-medium">verified</span> (the TXT record
+            genuinely matched), <span className="font-medium">not_verified</span>{' '}
+            (the DNS lookup succeeded and genuinely found no matching record —
+            the common case for a caller who hasn't published yet), or{' '}
+            <span className="font-medium">check_failed</span> (the DNS lookup
+            itself did not get a reliable answer this attempt — a resolver-side
+            issue, not a confirmed absence of the record, and worth resolving
+            again). Only <span className="font-medium">not_verified</span> and{' '}
+            <span className="font-medium">check_failed</span> both cap the
+            verdict at ownership_unverified — they used to be indistinguishable
+            from each other; now only one of the two implies retrying might
+            change the outcome.
+          </li>
+          <li>
+            <span className="font-mono text-xs bg-paper-dim px-1.5 py-0.5 rounded-sm">evidence_truncated</span>{' '}
+            — <span className="font-medium">true</span> if the RDAP record
+            fetched for this specific resolution was too large and was cut off
+            before the model ever saw the complete record. The judgment prompt
+            tells the model explicitly when this happens and asks it to prefer
+            an uncertain verdict over guessing — but a confident-looking verdict
+            alongside evidence_truncated: true still deserves real scrutiny.
+          </li>
+        </ul>
       </>
     ),
   },
@@ -180,7 +211,10 @@ const SECTIONS: Section[] = [
           verdict, it just caps out at ownership_unverified rather than
           reaching control_confirmed, since RDAP-text agreement alone was
           found, via a real portal review, not to be sufficient proof that
-          the filer actually controls the domain.
+          the filer actually controls the domain. If you did publish it and
+          still see ownership_unverified, check the dns_status field on the
+          resolved claim — check_failed means the lookup itself is worth
+          retrying, while not_verified means try waiting for propagation.
         </p>
         <p className="font-medium text-ink mb-1">I published the record and it still shows unverified.</p>
         <p className="mb-4">
