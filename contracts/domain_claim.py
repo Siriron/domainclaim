@@ -51,6 +51,38 @@ DoH endpoint with their DNS wire-format quote characters still
 embedded in the string, which the comparison logic strips defensively
 rather than assuming away).
 
+CONFIRMED SECOND REVIEW-CYCLE FIX (Aug 26 2026) — read this before
+assuming dns_ownership_verified's "true"/"false" pair is the only
+DNS-side signal this contract stores; it is not. The DNS-fix
+resubmission above passed its original rejection's specific concern
+but drew a second, narrower "More Information Needed" from a steward
+naming four things: (1) resolve_challenge's RDAP-refetch-failure
+branch omitted dns_ownership_verified entirely, making it structurally
+impossible for validator_fn to ever agree on that branch — fixed by
+including it (carried forward from the original claim's own value,
+since DNS wasn't re-checked when RDAP itself failed to fetch); (2) DNS
+resolver failures (Cloudflare DoH Status 2/SERVFAIL, or a missing/non-
+int Status field) were indistinguishable from a genuine, checked
+"record not present" (Status 0 or 3/NXDOMAIN) — fixed by checking
+Status explicitly and adding a third dns_status value, "check_failed",
+distinct from "verified"/"not_verified", so a resolver hiccup no
+longer permanently caps a claim the same way an honest absence does;
+(3) oversized RDAP records were silently truncated by _sanitize with
+no signal to the LLM or to storage — fixed with a pre-sanitize
+_is_truncated() check surfaced in both prompts and stored as
+evidence_truncated on both ClaimRecord and ChallengeRecord; (4) a
+defensive assertion was added before each claim/challenge ID is used,
+guarding against the counter ever being out of sync with stored
+records (no GenVM API exposes a transaction-hash-shaped field to
+contract code to bind an ID to more directly — confirmed against
+docs.genlayer.com before writing this, not assumed). Every field named
+above is independently re-derived and compared in validator_fn on both
+resolve_claim and resolve_challenge, matching this file's own existing
+discipline rather than being treated as a special case. Full account,
+including which of these five items is a confirmed root-cause fix
+versus a defensive hardening (item 4), in LESSONS.md Part 8 at this
+repo's root.
+
 CONCEPT
 -------
 A caller names a domain and asserts an identifying string (a name, an
@@ -359,10 +391,17 @@ BOTH resolve_claim and resolve_challenge:
      _now_epoch_seconds() helper, copied verbatim — never re-derived.
   9. Every field an outcome depends on is independently re-derived and
      compared inside validator_fn — in resolve_claim: outcome,
-     void_reason_code, verdict, registrant_signal, confidence_bps; in
-     resolve_challenge: decision, final_verdict, AND the cross-field
+     void_reason_code, verdict, registrant_signal, dns_ownership_
+     verified, dns_status, evidence_truncated, confidence_bps; in
+     resolve_challenge: decision, final_verdict, dns_ownership_
+     verified, dns_status, evidence_truncated, AND the cross-field
      decision/final_verdict consistency check named above as a
-     deliberate improvement over the pattern being reused.
+     deliberate improvement over the pattern being reused. dns_status
+     and evidence_truncated were added in the second review cycle
+     (LESSONS.md Part 8) — kept in sync here so this list never goes
+     stale relative to the actual validator_fn bodies, per Part 7.7's
+     own lesson about docstrings silently drifting from the code they
+     describe.
  10. No TreeMap in this contract is ever keyed by a value derived from
      an Address object — claims (u256), claims_by_domain (str domain),
      challenges (u256), permanently_voided_pairs (str domain+identity
@@ -409,16 +448,19 @@ DELIBERATE GAPS, STATED EXPLICITLY:
     specifically, not a direct authoritative-nameserver query. This
     means DNS propagation delay is a real, deliberately-accepted
     limitation: a caller who just published the TXT record may see
-    ownership_unverified on their first resolve_claim call if
-    Cloudflare's resolver hasn't yet picked up the new record, and
-    should retry after normal DNS TTL/propagation time — this is not a
-    contract bug, it is an honest consequence of relying on a public
-    recursive resolver rather than an authoritative one. Querying
-    multiple independent DoH resolvers and requiring agreement was
-    considered and deliberately deferred — it would strengthen the
-    signal against a single resolver being stale or compromised, at
-    the cost of real added complexity, and is a reasonable enhancement
-    for a future revision rather than a requirement for this one.
+    dns_status="not_verified" (and therefore ownership_unverified) on
+    their first resolve_claim call if Cloudflare's resolver hasn't yet
+    picked up the new record, and should retry after normal DNS TTL/
+    propagation time — this is not a contract bug, it is an honest
+    consequence of relying on a public recursive resolver rather than
+    an authoritative one, and is distinct from dns_status="check_failed"
+    (the resolver itself failed to answer at all — see the second
+    review-cycle fix below). Querying multiple independent DoH
+    resolvers and requiring agreement was considered and deliberately
+    deferred — it would strengthen the signal against a single resolver
+    being stale or compromised, at the cost of real added complexity,
+    and is a reasonable enhancement for a future revision rather than a
+    requirement for this one.
   - Exactly one challenge per resolved claim, not an unlimited or
     multi-round appeal chain. A claim whose challenge resolves to
     UPHOLD or OVERTURN moves straight to finalize_claim; there is no
@@ -428,6 +470,27 @@ DELIBERATE GAPS, STATED EXPLICITLY:
     where the underlying evidence source (RDAP) can simply be
     re-challenged again later as a fresh claim if circumstances
     genuinely change further.
+  - No historical record of WHICH resolve_claim/resolve_challenge
+    attempt a given dns_status="check_failed" happened on, or how many
+    times a caller has retried after a resolver failure — a caller
+    experiencing repeated check_failed results has no on-chain signal
+    distinguishing "transient, try again" from "this domain's DoH
+    lookup path is persistently broken for some structural reason."
+    This is a genuine, named limitation of the second review-cycle fix
+    (Aug 26 2026, see LESSONS.md Part 8) — dns_status correctly reports
+    the CURRENT attempt's outcome, honestly, but the contract has no
+    memory of the pattern across attempts. A future revision could
+    track a per-claim retry count; not built here because doing so
+    would have expanded a five-point resubmission fix into a sixth,
+    unrequested feature.
+  - No response-time SLA or deadline-precommitment mechanic tied to the
+    DNS ownership proof — a filed claim can be resolved, left
+    unresolved, or have its ownership proof published at any time,
+    with no expiry forcing a caller to act within a fixed window.
+    Deliberately deferred (see LESSONS.md Part 8.4): RDAP/DNS state
+    remains re-checkable indefinitely via the existing challenge
+    mechanism, so a deadline here would solve a problem this concept
+    does not actually have.
 """
 
 from genlayer import *
@@ -610,6 +673,24 @@ def _wrap_untrusted(label, text) -> str:
         f"{text}\n"
         f"<<<UNTRUSTED_{label}_END>>>"
     )
+
+
+def _is_truncated(text, max_len) -> bool:
+    """
+    CONFIRMED FIX (steward feedback, Aug 26 2026): _sanitize() silently
+    hard-truncates at max_len with no signal to the caller that
+    truncation occurred — a verbose RDAP record could be cut mid-JSON-
+    object and fed into the judgment prompt looking identical, from the
+    LLM's perspective, to a small, complete record. This is a pure,
+    deterministic length check on the PRE-sanitize text, called before
+    _sanitize() so both leader_fn and every validator_fn independently
+    compute the identical boolean from the identical raw fetched text —
+    no storage read, no LLM involvement, matching Bug 4/6's discipline
+    for anything touched inside a nondet closure.
+    """
+    if not isinstance(text, str):
+        return False
+    return len(text) > max_len
 
 
 # ---------------------------------------------------------------------------
@@ -842,15 +923,32 @@ def _resolve_dns_txt_verification(domain, expected_token):
     if not isinstance(data, dict):
         return False, "unexpected response shape"
 
+    # CONFIRMED FIX (steward feedback, Aug 26 2026): the previous version
+    # treated every "no Answer list" response as a genuine "not verified"
+    # result regardless of the DNS RCODE actually returned, collapsing a
+    # resolver failure into the same signal as an honest "caller hasn't
+    # published the record yet." Cloudflare's DoH JSON "Status" field is
+    # the standard DNS RCODE (confirmed against Cloudflare's own docs and
+    # cross-checked against independent DoH references): 0 = NOERROR (a
+    # real, definitive answer — including a real "zero matching records"
+    # answer), 3 = NXDOMAIN (the queried name doesn't exist — the
+    # expected, normal state for a verification subdomain nobody has
+    # published a TXT record under yet), anything else (2/SERVFAIL, or a
+    # missing/non-int Status field entirely) means the resolver itself
+    # failed to produce a reliable answer, which is the genuine
+    # transient-failure case this function's own docstring already
+    # promises to distinguish (ok=False) from a real "not verified"
+    # result (ok=True, matched=False).
+    status_code = data.get("Status")
+    if not isinstance(status_code, int):
+        return False, "missing or non-integer Status field"
+    if status_code not in (0, 3):
+        return False, f"resolver failure (DNS Status {status_code})"
+
     answers = data.get("Answer")
     if not isinstance(answers, list):
-        # Status 0 with no Answer list at all means NOERROR but zero
-        # records found — a genuine "not verified" result, not a
-        # transient failure. Status != 0 (NXDOMAIN, SERVFAIL, etc.) is
-        # also treated as "not verified" rather than transient-void,
-        # since a missing verification subdomain is the expected state
-        # for the overwhelming majority of callers who haven't
-        # published a token yet.
+        # NOERROR or NXDOMAIN with no Answer list: a real, definitive
+        # "no matching record" result, not a transient failure.
         return True, False
 
     for entry in answers:
@@ -1028,7 +1126,7 @@ def _coerce_bool_signal(raw) -> str:
     return ""
 
 
-def _build_judgment_prompt(domain, claimed_identity, rdap_json_text) -> str:
+def _build_judgment_prompt(domain, claimed_identity, rdap_json_text, truncated) -> str:
     parts = [
         _CHARTER,
         "",
@@ -1041,6 +1139,20 @@ def _build_judgment_prompt(domain, claimed_identity, rdap_json_text) -> str:
         "RDAP RECORD (fetched live by this contract, not supplied by any party):",
         _wrap_untrusted("RDAP_RECORD", _sanitize(rdap_json_text, _MAX_FETCH_LEN)),
         "",
+    ]
+    if truncated:
+        parts += [
+            "NOTE: the RDAP record above was too large and has been "
+            "TRUNCATED before being shown to you — it may be cut off "
+            "mid-object and should not be treated as the complete "
+            "record. If the truncation means you cannot locate a "
+            "registrant-role entity with confidence, or cannot tell "
+            "whether one exists past the cutoff, prefer "
+            "registrant_unresolvable over guessing, and say plainly in "
+            "reasoning_summary that the record was truncated.",
+            "",
+        ]
+    parts += [
         'Respond ONLY with JSON using exactly these keys: '
         '{"outcome": "judged", '
         '"verdict": ' + '|'.join(f'"{v}"' for v in _VALID_VERDICTS) + ', '
@@ -1055,7 +1167,7 @@ def _build_judgment_prompt(domain, claimed_identity, rdap_json_text) -> str:
 
 def _build_challenge_prompt(domain, original_verdict, original_signal,
                              original_reasoning, reason_code, statement,
-                             rdap_json_text) -> str:
+                             rdap_json_text, truncated) -> str:
     parts = [
         "You are adjudicating a challenge against a DomainClaim "
         "resolution. A domain-control verdict was previously reached "
@@ -1079,6 +1191,20 @@ def _build_challenge_prompt(domain, original_verdict, original_signal,
         "RE-FETCHED RDAP RECORD (live, fetched fresh at challenge-resolution time):",
         _wrap_untrusted("RDAP_RECORD_REFETCH", _sanitize(rdap_json_text, _MAX_FETCH_LEN)),
         "",
+    ]
+    if truncated:
+        parts += [
+            "NOTE: the re-fetched RDAP record above was too large and "
+            "has been TRUNCATED before being shown to you — it may be "
+            "cut off mid-object. If this means you cannot confidently "
+            "confirm the challenger's claim or the original judgment "
+            "against the re-fetched record, prefer REJECT (the "
+            "challenge is not supported by what you can actually see) "
+            "over OVERTURN, and say plainly in resolution_summary that "
+            "the re-fetched record was truncated.",
+            "",
+        ]
+    parts += [
         "RULES:",
         "1. decision must be one of: UPHOLD, OVERTURN, REJECT.",
         "2. UPHOLD = the original verdict is still correct against the "
@@ -1132,7 +1258,29 @@ class ClaimRecord:
     verdict: str
     registrant_signal: str
     dns_ownership_verified: str  # "" (not yet resolved) / "true" / "false"
+    dns_status: str  # "" (not yet resolved) / "verified" / "not_verified" /
+                       # "check_failed" — see leader_fn's dns_status note.
+                       # "check_failed" is the honest signal that the DNS
+                       # lookup itself didn't produce a reliable answer
+                       # this attempt (as opposed to a genuine, checked
+                       # "no matching record"), so a caller knows a later
+                       # resolve_claim retry may reach a different result
+                       # once the resolver issue clears.
     void_reason_code: str
+    evidence_truncated: str  # "" (not yet resolved) / "true" / "false" —
+                               # same str-not-bool storage convention as
+                               # every other boolean-shaped field on this
+                               # record (dns_ownership_verified above).
+                               # "true" means the RDAP JSON fed into THIS
+                               # resolution was cut off before the model
+                               # ever saw it — a caller/challenger reading
+                               # a confident-looking verdict alongside
+                               # evidence_truncated="true" should treat it
+                               # with real skepticism, since the charter
+                               # only asks the model to PREFER
+                               # registrant_unresolvable when truncated,
+                               # it cannot force honesty about an LLM's
+                               # own confidence.
     confidence_bps: u256
     reasoning_summary: str
     challenge_id: str  # "" if never challenged, else the challenge's id as a string
@@ -1155,6 +1303,22 @@ class ChallengeRecord:
     original_verdict: str
     final_verdict: str
     resolution_summary: str
+    # ADDED (steward feedback, Aug 26 2026): the claim's own
+    # dns_ownership_verified/dns_status/evidence_truncated are only ever
+    # written back to the CLAIM on an OVERTURN — on UPHOLD or REJECT the
+    # original resolution correctly stands untouched. But that means a
+    # reader of get_challenge had no way to see what THIS challenge
+    # round's own re-derivation actually found, even on UPHOLD/REJECT —
+    # a steward or challenger reviewing an UPHOLD decision could not
+    # tell whether it was reached against a clean, complete re-fetch or
+    # against truncated evidence / a failed DNS re-check. These three
+    # fields record the challenge round's own re-derived findings
+    # independent of whether they changed the claim, closing the same
+    # visibility gap on this path that the claim-level fields close on
+    # the original resolution path.
+    dns_ownership_verified: str  # "true" / "false" — this round's own re-check
+    dns_status: str              # "verified" / "not_verified" / "check_failed"
+    evidence_truncated: str      # "true" / "false" — this round's own re-fetch
     opened_at: u256
     resolved_at: u256
 
@@ -1217,6 +1381,32 @@ class DomainClaim(gl.Contract):
         )
 
         cid = self.next_claim_id
+        # CONFIRMED FIX (steward feedback, Aug 26 2026): a defensive
+        # assertion, not previously present, that the derived ID slot is
+        # genuinely unused before this claim is written into it. GenVM's
+        # documented execution model (each write method's deterministic
+        # body — everything outside leader_fn/validator_fn — runs to
+        # completion as a single atomic step per transaction, per
+        # docs.genlayer.com's own transaction-lifecycle description) and
+        # the fact that next_claim_id is never read or written from
+        # inside a nondet closure anywhere in this contract together
+        # mean a genuine double-assignment is not expected to be
+        # reachable in practice. This assertion does not change that —
+        # it exists so that if that expectation is ever wrong (a GenVM
+        # queuing edge case not documented anywhere this project has
+        # found, a future contract change that moves this read inside a
+        # nondet block by accident), the failure is a loud, immediate
+        # revert naming the exact colliding ID rather than a silent
+        # overwrite of an existing claim's data. No GenVM API exposes a
+        # per-transaction hash or similar identifier to contract code
+        # (gl.message only carries contract_address, sender_address,
+        # origin_address, value, chain_id — confirmed against
+        # docs.genlayer.com before writing this) that could bind an ID
+        # to "its own" transaction more directly than this.
+        assert cid not in self.claims, (
+            f"internal: claim id {int(cid)} is already in use — "
+            f"next_claim_id counter is out of sync with stored claims"
+        )
         self.next_claim_id = u256(int(self.next_claim_id) + 1)
 
         now = u256(_now_epoch_seconds())
@@ -1231,7 +1421,9 @@ class DomainClaim(gl.Contract):
             verdict="",
             registrant_signal="",
             dns_ownership_verified="",
+            dns_status="",
             void_reason_code="",
+            evidence_truncated="",
             confidence_bps=u256(0),
             reasoning_summary="",
             challenge_id="",
@@ -1303,15 +1495,40 @@ class DomainClaim(gl.Contract):
             # rejection named the exact gap this closes: RDAP-text
             # matching alone never proves the FILER controls the
             # domain, only that the claimed identity matches what the
-            # registry shows publicly. A DNS lookup failure here
-            # degrades to "not verified" rather than voiding the whole
-            # claim — RDAP evidence can still be judged even if the
-            # ownership-proof leg couldn't be checked this attempt.
+            # registry shows publicly.
+            #
+            # CONFIRMED FIX (steward feedback, Aug 26 2026): the
+            # previous version collapsed dns_ok=False (the DNS check
+            # itself failed to get a reliable answer — a resolver
+            # problem) and dns_ok=True/dns_matched=False (the check
+            # succeeded and genuinely found no matching record — the
+            # caller hasn't published yet) into the identical
+            # dns_verified=False outcome. That silently contradicts this
+            # docstring's own stated design: a resolver hiccup was
+            # treated exactly like an honest "not verified," permanently
+            # capping the claim at ownership_unverified even though the
+            # ownership question was never actually checked, rather than
+            # leaving the door open for a later resolve_claim retry once
+            # the resolver issue clears. dns_status now carries three
+            # genuinely distinct states — "verified" (checked, TXT
+            # matched), "not_verified" (checked, no match — the honest,
+            # common case for a caller who hasn't published), and
+            # "check_failed" (the DNS lookup itself did not produce a
+            # reliable answer this attempt) — and only "verified" is
+            # treated as DNS proof; "check_failed" is never silently
+            # folded into "not verified."
             dns_ok, dns_matched = _resolve_dns_txt_verification(c_mem.domain, expected_token)
-            dns_verified = bool(dns_ok and dns_matched)
+            if not dns_ok:
+                dns_status = "check_failed"
+            elif dns_matched:
+                dns_status = "verified"
+            else:
+                dns_status = "not_verified"
+            dns_verified = (dns_status == "verified")
 
             rdap_text = json.dumps(rdap_or_reason)
-            prompt = _build_judgment_prompt(c_mem.domain, c_mem.claimed_identity, rdap_text)
+            evidence_truncated = _is_truncated(rdap_text, _MAX_FETCH_LEN)
+            prompt = _build_judgment_prompt(c_mem.domain, c_mem.claimed_identity, rdap_text, evidence_truncated)
             result = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(result, dict):
                 raise gl.vm.UserError("llm_non_dict_response")
@@ -1369,6 +1586,8 @@ class DomainClaim(gl.Contract):
                 "verdict": final_verdict,
                 "registrant_signal": signal,
                 "dns_ownership_verified": "true" if dns_verified else "false",
+                "dns_status": dns_status,
+                "evidence_truncated": evidence_truncated,
                 "confidence_bps": confidence_bps,
                 "reasoning_summary": reasoning_summary,
             }
@@ -1415,12 +1634,44 @@ class DomainClaim(gl.Contract):
                 return False
             if leader_data.get("dns_ownership_verified") != my_data.get("dns_ownership_verified"):
                 return False
+            # CONFIRMED FIX (steward feedback, Aug 26 2026): dns_status
+            # now carries a real, independently re-derived signal
+            # ("verified" / "not_verified" / "check_failed") a caller
+            # relies on to know whether it's worth retrying resolve_claim
+            # after a resolver hiccup clears — it must be re-derived and
+            # compared here on the same footing as every other field an
+            # outcome depends on, not left as an untrusted extra the
+            # leader alone controls.
+            if leader_data.get("dns_status") not in ("verified", "not_verified", "check_failed"):
+                return False
+            if leader_data.get("dns_status") != my_data.get("dns_status"):
+                return False
             leader_verdict = leader_data.get("verdict")
             leader_signal = leader_data.get("registrant_signal")
             leader_dns = leader_data.get("dns_ownership_verified")
+            leader_dns_status = leader_data.get("dns_status")
+            # dns_ownership_verified == "true" must correspond exactly to
+            # dns_status == "verified" — the two fields are meant to be
+            # two views of the identical boolean, so any leader reporting
+            # them inconsistently (a genuine bug, or an attempt to game
+            # one check while leaving the other looking clean) fails here.
+            if (leader_dns == "true") != (leader_dns_status == "verified"):
+                return False
             if leader_verdict == "registrant_unresolvable" and leader_signal != "absent":
                 return False
             if leader_verdict in ("control_confirmed", "control_disputed", "ownership_unverified") and leader_signal != "present":
+                return False
+            # CONFIRMED FIX (steward feedback, Aug 26 2026): the pre-
+            # sanitize truncation flag is a pure, deterministic function
+            # of the same rdap_or_reason both leader and validator
+            # already independently fetched — re-derived and compared
+            # here so a truncated-evidence resolution requires genuine
+            # cross-node agreement that truncation occurred, the same as
+            # every other fact a verdict depends on, rather than being an
+            # untrusted flag the leader alone reports.
+            if not isinstance(leader_data.get("evidence_truncated"), bool):
+                return False
+            if leader_data.get("evidence_truncated") != my_data.get("evidence_truncated"):
                 return False
             # Deterministic-assignment consistency checks — these are
             # the direct fix for this contract's own rejected first
@@ -1478,6 +1729,8 @@ class DomainClaim(gl.Contract):
         c.verdict = result["verdict"]
         c.registrant_signal = result["registrant_signal"]
         c.dns_ownership_verified = result.get("dns_ownership_verified", "false")
+        c.dns_status = result.get("dns_status", "check_failed")
+        c.evidence_truncated = "true" if result.get("evidence_truncated") else "false"
         c.confidence_bps = u256(int(result["confidence_bps"]))
         c.reasoning_summary = _sanitize(result.get("reasoning_summary", ""), _MAX_REASONING_STORE_LEN)
         c.status = "resolved_pending"
@@ -1489,6 +1742,7 @@ class DomainClaim(gl.Contract):
             "outcome": "judged",
             "verdict": c.verdict,
             "dns_ownership_verified": c.dns_ownership_verified,
+            "dns_status": c.dns_status,
             "status": "resolved_pending",
         })
 
@@ -1520,6 +1774,15 @@ class DomainClaim(gl.Contract):
         assert len(clean_statement) > 0, "statement cannot be empty"
 
         chid = self.next_challenge_id
+        # Same defensive assertion as file_claim's cid check above — see
+        # that comment for the full reasoning; applied identically here
+        # since next_challenge_id is symmetric with next_claim_id in
+        # every relevant respect (never touched inside a nondet closure,
+        # incremented once per deterministic write-method body).
+        assert chid not in self.challenges, (
+            f"internal: challenge id {int(chid)} is already in use — "
+            f"next_challenge_id counter is out of sync with stored challenges"
+        )
         self.next_challenge_id = u256(int(self.next_challenge_id) + 1)
 
         self.challenges[chid] = ChallengeRecord(
@@ -1533,6 +1796,9 @@ class DomainClaim(gl.Contract):
             original_verdict=c.verdict,
             final_verdict=c.verdict,
             resolution_summary="",
+            dns_ownership_verified="",
+            dns_status="",
+            evidence_truncated="",
             opened_at=u256(now),
             resolved_at=u256(0),
         )
@@ -1582,9 +1848,40 @@ class DomainClaim(gl.Contract):
                 # evaluated against evidence that couldn't be fetched,
                 # so the original verdict stands rather than being
                 # overturned on missing evidence.
+                #
+                # CONFIRMED FIX (steward feedback, Aug 26 2026): this
+                # branch previously omitted dns_ownership_verified
+                # entirely. validator_fn unconditionally checks
+                # leader_data.get("dns_ownership_verified") in
+                # ("true", "false") on every branch, so a leader
+                # reaching THIS branch and a validator independently
+                # reaching it too would both produce a dict with no
+                # such key — leader_data.get(...) is None, "None not in
+                # ('true','false')" is True, and validator_fn returns
+                # False unconditionally. Every RDAP re-fetch failure
+                # during a challenge was therefore structurally unable
+                # to reach consensus at all, regardless of how many
+                # validators agreed on REJECT — not a rare edge case,
+                # since a re-fetch failure is exactly the situation
+                # this branch exists to handle. Carrying forward the
+                # ORIGINAL claim's own dns_ownership_verified value here
+                # (never re-derived, since DNS wasn't re-checked when
+                # RDAP itself couldn't be fetched) makes this branch's
+                # shape consistent with every other branch's shape, so
+                # the same field-by-field validator_fn logic below
+                # applies uniformly with no special-casing required.
                 return {
                     "decision": "REJECT",
                     "final_verdict": c_mem.verdict,
+                    "dns_ownership_verified": c_mem.dns_ownership_verified,
+                    "dns_status": c_mem.dns_status,
+                    "evidence_truncated": False,  # no RDAP text was ever
+                                                    # fetched this attempt
+                                                    # to be truncated —
+                                                    # a fetch failure and
+                                                    # a truncation are
+                                                    # different facts,
+                                                    # not interchangeable.
                     "resolution_summary": f"re-fetch failed: {rdap_or_reason}",
                 }
 
@@ -1596,10 +1893,26 @@ class DomainClaim(gl.Contract):
             # the original claim's stored dns_ownership_verified value,
             # matching this whole method's own "re-fetch fresh, never
             # read stored content" discipline.
+            #
+            # CONFIRMED FIX (steward feedback, Aug 26 2026): same
+            # three-state dns_status distinction as resolve_claim's
+            # leader_fn — a resolver failure during challenge
+            # resolution is no longer silently folded into "not
+            # verified now" (which would have let a stale
+            # control_confirmed be overturned to ownership_unverified
+            # purely because the resolver hiccuped during THIS
+            # challenge, not because domain control genuinely changed).
             dns_ok, dns_matched = _resolve_dns_txt_verification(c_mem.domain, expected_token)
-            dns_verified_now = bool(dns_ok and dns_matched)
+            if not dns_ok:
+                dns_status_now = "check_failed"
+            elif dns_matched:
+                dns_status_now = "verified"
+            else:
+                dns_status_now = "not_verified"
+            dns_verified_now = (dns_status_now == "verified")
 
             rdap_text = json.dumps(rdap_or_reason)
+            evidence_truncated_now = _is_truncated(rdap_text, _MAX_FETCH_LEN)
             prompt = _build_challenge_prompt(
                 c_mem.domain,
                 c_mem.verdict,
@@ -1608,6 +1921,7 @@ class DomainClaim(gl.Contract):
                 ch_mem.reason_code,
                 ch_mem.statement,
                 rdap_text,
+                evidence_truncated_now,
             )
             result = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(result, dict):
@@ -1650,6 +1964,8 @@ class DomainClaim(gl.Contract):
                 "decision": decision,
                 "final_verdict": final_verdict,
                 "dns_ownership_verified": "true" if dns_verified_now else "false",
+                "dns_status": dns_status_now,
+                "evidence_truncated": evidence_truncated_now,
                 "resolution_summary": resolution_summary,
             }
 
@@ -1677,6 +1993,28 @@ class DomainClaim(gl.Contract):
             if leader_data.get("dns_ownership_verified") not in ("true", "false"):
                 return False
             if leader_data.get("dns_ownership_verified") != my_data.get("dns_ownership_verified"):
+                return False
+            # CONFIRMED FIX (steward feedback, Aug 26 2026): dns_status
+            # re-derived and compared here too, same reasoning as
+            # resolve_claim's validator_fn — this is what lets a
+            # challenger or a future finalize_claim reader tell "domain
+            # control was genuinely re-checked and absent" apart from
+            # "the DNS check itself failed during this challenge round."
+            if leader_data.get("dns_status") not in ("verified", "not_verified", "check_failed"):
+                return False
+            if leader_data.get("dns_status") != my_data.get("dns_status"):
+                return False
+            leader_dns_status = leader_data.get("dns_status")
+            if (leader_data.get("dns_ownership_verified") == "true") != (leader_dns_status == "verified"):
+                return False
+            # CONFIRMED FIX (steward feedback, Aug 26 2026): same
+            # truncation re-derivation as resolve_claim's validator_fn —
+            # a challenge round that reasoned over truncated evidence
+            # must have every validator independently re-derive that
+            # fact, not trust the leader's report of it.
+            if not isinstance(leader_data.get("evidence_truncated"), bool):
+                return False
+            if leader_data.get("evidence_truncated") != my_data.get("evidence_truncated"):
                 return False
 
             # Named improvement #2 over the reused pattern (see
@@ -1717,12 +2055,24 @@ class DomainClaim(gl.Contract):
         ch.decision = result["decision"]
         ch.final_verdict = result["final_verdict"]
         ch.resolution_summary = _sanitize(result.get("resolution_summary", ""), _MAX_RESOLUTION_SUMMARY_LEN)
+        # ADDED (steward feedback, Aug 26 2026): recorded unconditionally
+        # on the CHALLENGE record, regardless of decision — these three
+        # fields describe what THIS round's own re-derivation found, not
+        # whether it changed the claim. On UPHOLD/REJECT the claim's own
+        # fields correctly stay untouched below, but the challenge
+        # record itself should never be silent about what was actually
+        # re-checked.
+        ch.dns_ownership_verified = result.get("dns_ownership_verified", "false")
+        ch.dns_status = result.get("dns_status", "check_failed")
+        ch.evidence_truncated = "true" if result.get("evidence_truncated") else "false"
         ch.resolved_at = now
         self.challenges[challenge_id] = ch
 
         if result["decision"] == "OVERTURN":
             c.verdict = result["final_verdict"]
             c.dns_ownership_verified = result.get("dns_ownership_verified", "false")
+            c.dns_status = result.get("dns_status", "check_failed")
+            c.evidence_truncated = "true" if result.get("evidence_truncated") else "false"
         c.status = "resolved_pending"  # returns to pending; finalize_claim applies it
         self.claims[ch.claim_id] = c
 
@@ -1779,7 +2129,9 @@ class DomainClaim(gl.Contract):
             "verdict": c.verdict,
             "registrant_signal": c.registrant_signal,
             "dns_ownership_verified": c.dns_ownership_verified,
+            "dns_status": c.dns_status,
             "void_reason_code": c.void_reason_code,
+            "evidence_truncated": c.evidence_truncated,
             "confidence_bps": int(c.confidence_bps),
             "reasoning_summary": c.reasoning_summary,
             "challenge_id": c.challenge_id,
@@ -1825,6 +2177,9 @@ class DomainClaim(gl.Contract):
             "original_verdict": ch.original_verdict,
             "final_verdict": ch.final_verdict,
             "resolution_summary": ch.resolution_summary,
+            "dns_ownership_verified": ch.dns_ownership_verified,
+            "dns_status": ch.dns_status,
+            "evidence_truncated": ch.evidence_truncated,
             "opened_at": int(ch.opened_at),
             "resolved_at": int(ch.resolved_at),
         })
