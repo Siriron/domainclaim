@@ -8,7 +8,7 @@
 // worse than no toggle at all.
 
 export const STUDIONET_CONTRACT_ADDRESS =
-  '0xcaF89d9eB7De0aA4532C070332419Cb1a886f9F3';
+  '0x03E5E595834cAF1c50Eb88229eA1e6520B344b88';
 
 export const STUDIONET_CONFIG = {
   chainId: '0xF22F', // 61999
